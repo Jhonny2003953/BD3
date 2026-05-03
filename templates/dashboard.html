@@ -2,104 +2,47 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard de Resultados - Dupla 31</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/bootstrap.min.css">
+    <title>Dashboard Electoral</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { background-color: #f0f2f5; }
-        .chart-container { background: white; border-radius: 15px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .stats-badge { font-size: 1.2rem; font-weight: bold; }
-    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
 </head>
-<body>
-
-<div class="container py-5">
-    <h1 class="text-center mb-5">Resultados en Tiempo Real (Misión Crítica)</h1>
-    
-    <div class="row">
-        <!-- Columna Presidente -->
-        <div class="col-md-6">
-            <div class="chart-container">
-                <h3 class="text-center">Elección Presidencial</h3>
-                <canvas id="chartPresidente"></canvas>
-                <div class="text-center mt-3">
-                    <span class="badge bg-primary stats-badge" id="totalPres">Total: 0</span>
-                </div>
-            </div>
+<body class="bg-dark text-white">
+    <div class="container mt-4">
+        <h2 class="text-center">📊 Monitor Geográfico en Vivo</h2>
+        <div class="row mt-4">
+            <div class="col-md-6"><canvas id="cPresi" class="bg-white p-2"></canvas></div>
+            <div class="col-md-6"><canvas id="cGober" class="bg-white p-2"></canvas></div>
         </div>
-
-        <!-- Columna Gobernador -->
-        <div class="col-md-6">
-            <div class="chart-container">
-                <h3 class="text-center">Elección Gobernador</h3>
-                <canvas id="chartGobernador"></canvas>
-                <div class="text-center mt-3">
-                    <span class="badge bg-success stats-badge" id="totalGob">Total: 0</span>
-                </div>
-            </div>
+        <div class="card mt-4 p-3 text-dark">
+            <h4>📍 Liderazgo por Provincia (Presidente)</h4>
+            <table class="table">
+                <thead><tr><th>Provincia</th><th>Partido A</th><th>Partido B</th></tr></thead>
+                <tbody id="tBody"></tbody>
+            </table>
         </div>
     </div>
 
-    <div class="text-center mt-4">
-        <a href="/" class="btn btn-outline-secondary">Volver al Formulario de Votación</a>
-    </div>
-</div>
+    <script>
+        const ctxP = document.getElementById('cPresi').getContext('2d');
+        const ctxG = document.getElementById('cGober').getContext('2d');
+        const chartP = new Chart(ctxP, { type: 'bar', data: { labels: ['A', 'B'], datasets: [{ data: [0,0], backgroundColor: '#36a2eb' }] }, options: { plugins: { title: { display: true, text: 'Presidente' } } } });
+        const chartG = new Chart(ctxG, { type: 'bar', data: { labels: ['X', 'Y'], datasets: [{ data: [0,0], backgroundColor: '#ff9f40' }] }, options: { plugins: { title: { display: true, text: 'Gobernador' } } } });
 
-<script>
-    // Configuración Inicial de Gráficas
-    const config = (label, color) => ({
-        type: 'bar',
-        data: {
-            labels: [],
-            datasets: [{
-                label: label,
-                data: [],
-                backgroundColor: color,
-                borderWidth: 1
-            }]
-        },
-        options: {
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
-            responsive: true
-        }
-    });
-
-    const ctxPres = document.getElementById('chartPresidente').getContext('2d');
-    const ctxGob = document.getElementById('chartGobernador').getContext('2d');
-
-    const chartPres = new Chart(ctxPres, config('Votos Presidenciales', 'rgba(54, 162, 235, 0.7)'));
-    const chartGob = new Chart(ctxGob, config('Votos Gobernación', 'rgba(75, 192, 192, 0.7)'));
-
-    async function actualizarResultados() {
-        try {
-            // 1. Obtener Datos Presidente
-            const resPres = await fetch('/api/resultados/PRESIDENTE');
-            const dataPres = await resPres.json();
+        async function update() {
+            const res = await fetch('/api/resultados_completos');
+            const d = await res.json();
             
-            chartPres.data.labels = ['Partido A', 'Partido B'];
-            chartPres.data.datasets[0].data = [dataPres.Partido_A, dataPres.Partido_B];
-            chartPres.update();
-            document.getElementById('totalPres').innerText = `Total: ${dataPres.Total}`;
+            chartP.data.datasets[0].data = [d.presidente.A, d.presidente.B];
+            chartG.data.datasets[0].data = [d.gobernador.X, d.gobernador.Y];
+            chartP.update(); chartG.update();
 
-            // 2. Obtener Datos Gobernador
-            const resGob = await fetch('/api/resultados/GOBERNADOR');
-            const dataGob = await resGob.json();
-            
-            chartGob.data.labels = ['Partido X', 'Partido Y'];
-            chartGob.data.datasets[0].data = [dataGob.Partido_X, dataGob.Partido_Y];
-            chartGob.update();
-            document.getElementById('totalGob').innerText = `Total: ${dataGob.Total}`;
-
-        } catch (error) {
-            console.error("Error actualizando el dashboard:", error);
+            let html = '';
+            for(let p in d.provincias) {
+                html += `<tr><td>${p.toUpperCase()}</td><td>${d.provincias[p].A}</td><td>${d.provincias[p].B}</td></tr>`;
+            }
+            document.getElementById('tBody').innerHTML = html;
         }
-    }
-
-    // Actualización automática cada 3 segundos (Simulación de Real-Time)
-    setInterval(actualizarResultados, 3000);
-    actualizarResultados();
-</script>
-
+        setInterval(update, 2000);
+    </script>
 </body>
 </html>

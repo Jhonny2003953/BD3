@@ -1,63 +1,56 @@
-import boto3
 import redis
-from botocore.config import Config
+import boto3
+from botocore.exceptions import ClientError
 
-def get_db_connections():
-    """
-    Inicializa y retorna las conexiones para DynamoDB Local 
-    y Memurai/KeyDB (Velocidad).
-    """
-    
-    # 1. Configuración de Memurai / KeyDB (Local)
+# 1. CONFIGURACIÓN DE MEMURAI (CACHÉ Y CONCURRENCIA)
+# Se utiliza el puerto 6379 por defecto para la gestión de votos en tiempo real.
+try:
+    cache_keydb = redis.Redis(
+        host='localhost',
+        port=6379,
+        decode_responses=True,
+        socket_timeout=5
+    )
+    # Prueba de conexión rápida
+    cache_keydb.ping()
+    print("✅ Memurai (KeyDB) conectado exitosamente en el puerto 6379.")
+except redis.ConnectionError:
+    print("❌ Error: No se pudo conectar a Memurai. Asegúrate de que el servicio esté activo.")
+
+# 2. CONFIGURACIÓN DE DYNAMODB LOCAL (PERSISTENCIA Y AUDITORÍA)
+# Configurado para apuntar al puerto 8000 donde corre tu base de datos de misión crítica.
+dynamodb_resource = boto3.resource(
+    'dynamodb',
+    endpoint_url='http://localhost:8000',
+    region_name='us-east-1',
+    aws_access_key_id='bolt',     # Credenciales para entorno local
+    aws_secret_access_key='bolt'
+)
+
+def get_db_table(table_name):
+    """Retorna el objeto de la tabla de DynamoDB."""
+    return dynamodb_resource.Table(table_name)
+
+# 3. UTILIDAD DE INICIALIZACIÓN (OPCIONAL)
+# Puedes usar esto para verificar que las tablas existan al arrancar.
+def verificar_tablas():
+    tablas_necesarias = ['Votacion_Escrutinio', 'Votacion_Identidad']
+    client = boto3.client(
+        'dynamodb',
+        endpoint_url='http://localhost:8000',
+        region_name='us-east-1',
+        aws_access_key_id='bolt',
+        aws_secret_access_key='bolt'
+    )
     try:
-        cache_keydb = redis.Redis(
-            host='localhost', 
-            port=6379, 
-            db=0, 
-            decode_responses=True
-        )
-        # Probamos la conexión inmediata
-        cache_keydb.ping()
+        existentes = client.list_tables()['TableNames']
+        for tabla in tablas_necesarias:
+            if tabla not in existentes:
+                print(f"⚠️ Advertencia: La tabla {tabla} no existe. Créala desde el PartiQL Editor.")
+            else:
+                print(f"✅ Tabla {tabla} detectada correctamente.")
     except Exception as e:
-        print(f"Aviso: Memurai no detectado ({e})")
-        cache_keydb = None
+        print(f"❌ Error al conectar con DynamoDB Local: {e}")
 
-    # 2. Configuración de Amazon DynamoDB LOCAL
-    # Usamos una configuración ligera para evitar problemas con Python 3.13
-    try:
-        local_config = Config(
-            region_name='us-east-1',
-            retries={'max_attempts': 1}
-        )
-        
-        db_dynamo = boto3.resource(
-            'dynamodb',
-            endpoint_url="http://localhost:8000",
-            aws_access_key_id='123',
-            aws_secret_access_key='123',
-            config=local_config
-        )
-        
-        # Validamos la conexión intentando listar tablas (opcional)
-        # list(db_dynamo.tables.all())
-        
-    except Exception as e:
-        print(f"Error conectando a DynamoDB Local: {e}")
-        db_dynamo = None
-
-    return db_dynamo, cache_keydb
-
-# Script de prueba independiente
 if __name__ == "__main__":
-    dynamo, keydb = get_db_connections()
-    print("\n--- Verificación de Infraestructura ---")
-    
-    if keydb:
-        print("[OK] Memurai (Redis) conectado.")
-    else:
-        print("[!] Memurai no responde. Verifica que el servicio esté activo.")
-        
-    if dynamo:
-        print("[OK] DynamoDB Local detectado en el puerto 8000.")
-    else:
-        print("[!] DynamoDB Local no responde. Verifica que el archivo .jar esté corriendo.")
+    verificar_tablas()

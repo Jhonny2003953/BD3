@@ -1,81 +1,96 @@
 from flask import Flask, render_template, request, jsonify
-from database import get_db_connections
+import redis
+import boto3
 from datetime import datetime
 
 app = Flask(__name__)
-db_dynamo, cache_keydb = get_db_connections()
+
+# --- CONEXIONES ---
+cache_keydb = redis.Redis(host='localhost', port=6379, decode_responses=True)
+dynamodb = boto3.resource(
+    'dynamodb',
+    endpoint_url='http://localhost:8000',
+    region_name='us-east-1',
+    aws_access_key_id='bolt',
+    aws_secret_access_key='bolt'
+)
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/votar', methods=['POST'])
-def registrar_voto():
-    """
-    Procesa votos masivos mitigando cuellos de botella mediante Memurai
-    y asegurando persistencia en DynamoDB.
-    """
-    try:
-        ci = request.form.get('voter_id')
-        candidato = request.form.get('candidate')
-        tipo_eleccion = request.form.get('eleccion_tipo') # PRESIDENTE | GOBERNADOR
-
-        # 1. Seguridad: Validación de Identidad y Rol en Memurai (HSET ciudadano:{CI})
-        user_data = cache_keydb.hgetall(f"ciudadano:{ci}")
-        if not user_data:
-            return jsonify({"status": "error", "message": "CI no registrado en el padrón."}), 404
-
-        # 2. Integridad: Control de Doble Voto (SADD padron:ha_votado:{TIPO})
-        es_nuevo = cache_keydb.sadd(f"padron:ha_votado:{tipo_eleccion}", ci)
-        if not es_nuevo:
-            return jsonify({"status": "error", "message": f"Ya emitió su voto para {tipo_eleccion}."}), 403
-
-        # 3. Disponibilidad: Conteo Atómico en Real-Time (Redis INCR)
-        cache_keydb.incr(f"votos:{tipo_eleccion}:total:partido:{candidato}")
-        cache_keydb.incr(f"votos:{tipo_eleccion}:total:tipo:valido")
-
-        # 4. Persistencia: Auditoría en DynamoDB (Single Table Design)
-        table = db_dynamo.Table('Votacion_Escrutinio')
-        table.put_item(
-            Item={
-                'PK': f'CI#{ci}',
-                'SK': f'ELEC#{tipo_eleccion}',
-                'candidato': candidato,
-                'mesa': user_data.get('mesa_asignada', 'SIN_MESA'),
-                'timestamp': datetime.now().isoformat(),
-                'voto_id': f"{ci}-{tipo_eleccion}"
-            }
-        )
-
-        return jsonify({"status": "success", "message": f"Voto para {tipo_eleccion} procesado."}), 200
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": "Fallo en la infraestructura: " + str(e)}), 500
-
 @app.route('/dashboard')
 def dashboard():
     return render_template('dashboard.html')
 
-@app.route('/api/resultados/<eleccion>')
-def obtener_resultados(eleccion):
+@app.route('/votar', methods=['POST'])
+def registrar_voto():
     try:
-        partidos = ["A", "B"] if eleccion == "PRESIDENTE" else ["X", "Y"]
-        resultados = {}
-        
-        for p in partidos:
-            valor = cache_keydb.get(f"votos:{eleccion}:total:partido:{p}")
-            # Si la llave no existe en Memurai, la inicializamos en 0
-            if valor is None:
-                cache_keydb.set(f"votos:{eleccion}:total:partido:{p}", 0)
-                valor = 0
-            resultados[f"Partido_{p}"] = int(valor)
+        ci = request.form.get('voter_id')
+        candidato = request.form.get('candidate')
+        eleccion = request.form.get('eleccion_tipo').lower()
 
-        total = cache_keydb.get(f"votos:{eleccion}:total:tipo:valido")
-        resultados["Total"] = int(total or 0)
-        
-        return jsonify(resultados)
+        # 1. VALIDACIÓN: Buscar en Redis, si no, ir a DynamoDB (Votacion_Identidad)
+        user_data = cache_keydb.hgetall(f"ciudadano:{ci}")
+        if not user_data:
+            table_id = dynamodb.Table('Votacion_Identidad')
+            response = table_id.get_item(Key={'CI': ci})
+            if 'Item' in response:
+                user_data = response['Item']
+                cache_keydb.hset(f"ciudadano:{ci}", mapping=user_data)
+            else:
+                return jsonify({"status": "error", "message": "CI no habilitado"}), 404
+
+        # 2. SEGURIDAD: Control de Doble Voto
+        if not cache_keydb.sadd(f"padron:ha_votado:{eleccion}", ci):
+            return jsonify({"status": "error", "message": f"Ya votó para {eleccion}"}), 403
+
+        # 3. CONTEO EN REDIS (Pipeline para eficiencia)
+        prov = user_data.get('provincia', 'desconocida').lower()
+        pipe = cache_keydb.pipeline()
+        pipe.incr(f"votos:{eleccion}:nac:partido:{candidato}")
+        pipe.incr(f"votos:{eleccion}:nac:tipo:valido")
+        pipe.incr(f"votos:{eleccion}:prov:{prov}:partido:{candidato}")
+        pipe.execute()
+
+        # 4. PERSISTENCIA EN DYNAMODB (Escrutinio)
+        table_esc = dynamodb.Table('Votacion_Escrutinio')
+        table_esc.put_item(Item={
+            'PK': f"ELECCION#{eleccion.upper()}",
+            'SK': f"PROV#{prov.upper()}#MESA#{user_data.get('mesa_asignada','0')}",
+            'voter_ci': ci,
+            'voto': candidato,
+            'timestamp': datetime.now().isoformat()
+        })
+
+        return jsonify({"status": "success", "message": "Voto procesado correctamente"}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/resultados_completos')
+def obtener_resultados():
+    # Lista de provincias para el desglose
+    provincias = ['murillo', 'ingavi', 'omaysuyos', 'cercado', 'andres_ibanez']
+    geo_data = {}
+    for p in provincias:
+        geo_data[p] = {
+            "A": int(cache_keydb.get(f"votos:presidente:prov:{p}:partido:A") or 0),
+            "B": int(cache_keydb.get(f"votos:presidente:prov:{p}:partido:B") or 0)
+        }
+
+    return jsonify({
+        "presidente": {
+            "A": int(cache_keydb.get("votos:presidente:nac:partido:A") or 0),
+            "B": int(cache_keydb.get("votos:presidente:nac:partido:B") or 0),
+            "total": int(cache_keydb.get("votos:presidente:nac:tipo:valido") or 0)
+        },
+        "gobernador": {
+            "X": int(cache_keydb.get("votos:gobernador:nac:partido:X") or 0),
+            "Y": int(cache_keydb.get("votos:gobernador:nac:partido:Y") or 0),
+            "total": int(cache_keydb.get("votos:gobernador:nac:tipo:valido") or 0)
+        },
+        "provincias": geo_data
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
