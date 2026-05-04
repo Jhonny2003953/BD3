@@ -2,45 +2,110 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Dashboard Electoral</title>
+    <title>SIVRE - Centro de Monitoreo</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0b0e11; color: #e9ecef; font-family: 'Consolas', monospace; }
+        .stat-card { background: #161b22; border-radius: 10px; border-left: 5px solid #00d2ff; transition: 0.3s; }
+        .stat-card:hover { transform: translateY(-5px); background: #1c2128; }
+        .table { color: #e9ecef; border-color: #30363d; }
+        .table-dark { --bs-table-bg: #0d1117; }
+        .chart-container { background: #161b22; padding: 15px; border-radius: 15px; border: 1px solid #30363d; }
+        .neon-text { color: #00d2ff; text-shadow: 0 0 10px rgba(0, 210, 255, 0.5); }
+        .trend-up { color: #00ff88; }
+        .trend-down { color: #ff4b2b; }
+    </style>
 </head>
-<body class="bg-dark text-white">
-    <div class="container mt-4">
-        <h2 class="text-center">📊 Monitor Geográfico en Vivo</h2>
-        <div class="row mt-4">
-            <div class="col-md-6"><canvas id="cPresi" class="bg-white p-2"></canvas></div>
-            <div class="col-md-6"><canvas id="cGober" class="bg-white p-2"></canvas></div>
+<body>
+    <div class="container-fluid p-4">
+        <header class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3 border-secondary">
+            <div>
+                <h1 class="neon-text mb-0">🛰️ CENTRO DE MONITOREO ELECTORAL</h1>
+                <p class="text-secondary small">Sincronización en tiempo real: Redis + DynamoDB</p>
+            </div>
+            <div id="clock" class="h4 text-info"></div>
+        </header>
+
+        <div class="row g-4">
+            <div class="col-lg-6">
+                <div class="chart-container">
+                    <h5 class="text-center mb-3 border-bottom border-secondary pb-2">Elecciones Presidenciales</h5>
+                    <canvas id="cP"></canvas>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="chart-container">
+                    <h5 class="text-center mb-3 border-bottom border-secondary pb-2">Elecciones Gobernador</h5>
+                    <canvas id="cG"></canvas>
+                </div>
+            </div>
         </div>
-        <div class="card mt-4 p-3 text-dark">
-            <h4>📍 Liderazgo por Provincia (Presidente)</h4>
-            <table class="table">
-                <thead><tr><th>Provincia</th><th>Partido A</th><th>Partido B</th></tr></thead>
-                <tbody id="tBody"></tbody>
-            </table>
+
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="stat-card p-4">
+                    <h4 class="mb-4 text-info">📍 Desglose Geográfico por Provincia</h4>
+                    <div class="table-responsive">
+                        <table class="table table-dark table-hover align-middle">
+                            <thead class="text-uppercase text-secondary small">
+                                <tr>
+                                    <th>Jurisdicción</th>
+                                    <th>Presidente (A)</th>
+                                    <th>Presidente (B)</th>
+                                    <th>Gobernador (X)</th>
+                                    <th>Gobernador (Y)</th>
+                                    <th>Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        const ctxP = document.getElementById('cPresi').getContext('2d');
-        const ctxG = document.getElementById('cGober').getContext('2d');
-        const chartP = new Chart(ctxP, { type: 'bar', data: { labels: ['A', 'B'], datasets: [{ data: [0,0], backgroundColor: '#36a2eb' }] }, options: { plugins: { title: { display: true, text: 'Presidente' } } } });
-        const chartG = new Chart(ctxG, { type: 'bar', data: { labels: ['X', 'Y'], datasets: [{ data: [0,0], backgroundColor: '#ff9f40' }] }, options: { plugins: { title: { display: true, text: 'Gobernador' } } } });
+        const clock = () => document.getElementById('clock').innerText = new Date().toLocaleTimeString();
+        setInterval(clock, 1000);
+
+        const cfg = (label, color) => ({
+            type: 'bar',
+            data: { labels: label, datasets: [{ data: [0, 0], backgroundColor: color, borderRadius: 5 }] },
+            options: { 
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, grid: { color: '#30363d' } }, x: { grid: { display: false } } }
+            }
+        });
+
+        const chartP = new Chart(document.getElementById('cP'), cfg(['Partido A', 'Partido B'], ['#36a2eb', '#ff4b2b']));
+        const chartG = new Chart(document.getElementById('cG'), cfg(['Partido X', 'Partido Y'], ['#00ff88', '#ffcc00']));
 
         async function update() {
-            const res = await fetch('/api/resultados_completos');
-            const d = await res.json();
-            
-            chartP.data.datasets[0].data = [d.presidente.A, d.presidente.B];
-            chartG.data.datasets[0].data = [d.gobernador.X, d.gobernador.Y];
-            chartP.update(); chartG.update();
+            try {
+                const res = await fetch('/api/resultados_completos');
+                const d = await res.json();
+                
+                chartP.data.datasets[0].data = [d.presidente.A, d.presidente.B];
+                chartG.data.datasets[0].data = [d.gobernador.X, d.gobernador.Y];
+                chartP.update(); chartG.update();
 
-            let html = '';
-            for(let p in d.provincias) {
-                html += `<tr><td>${p.toUpperCase()}</td><td>${d.provincias[p].A}</td><td>${d.provincias[p].B}</td></tr>`;
-            }
-            document.getElementById('tBody').innerHTML = html;
+                let html = '';
+                for(let p in d.provincias) {
+                    const v = d.provincias[p];
+                    html += `<tr>
+                        <td class="fw-bold">${p.toUpperCase()}</td>
+                        <td class="text-primary">${v.presi_A}</td>
+                        <td class="text-danger">${v.presi_B}</td>
+                        <td class="text-success">${v.gober_X}</td>
+                        <td class="text-warning">${v.gober_Y}</td>
+                        <td><span class="badge bg-success">ACTIVO</span></td>
+                    </tr>`;
+                }
+                document.getElementById('tBody').innerHTML = html;
+            } catch(e) { console.error("Error de enlace:", e); }
         }
         setInterval(update, 2000);
     </script>
